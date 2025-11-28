@@ -1,2 +1,2 @@
-# vibecoding1
+# dogfood
 Vibe coding projects related to search service
