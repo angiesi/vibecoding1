@@ -26,7 +26,7 @@ class DogFoodSearchClient:
         """Initialize Azure Search client with environment variables."""
         self.endpoint = os.getenv("AZURE_SEARCH_ENDPOINT")
         self.key = os.getenv("AZURE_SEARCH_KEY")
-        self.index_name = os.getenv("AZURE_SEARCH_INDEX_NAME", "dog-food-recommendations")
+        self.index_name = os.getenv("AZURE_SEARCH_INDEX_NAME", "angiesichowindex")
         
         if not self.endpoint or not self.key:
             print("Warning: Azure Search credentials not found in environment variables.")
@@ -45,47 +45,65 @@ class DogFoodSearchClient:
                 credential=self.credential
             )
     
+    def _convert_result_to_app_format(self, result: Dict) -> Dict:
+        """Convert Azure Search result to application format."""
+        # Extract weight range
+        weight_min = result.get("weight_min", 0)
+        weight_max = result.get("weight_max", 0)
+        weight_range = f"{weight_min}-{weight_max} kg"
+        
+        # Parse portion per kg to get grams
+        portion_str = result.get("portion_per_kg", "20 g")
+        try:
+            portion_grams = int(portion_str.replace(" g", "").strip())
+        except (ValueError, AttributeError):
+            portion_grams = 20
+        
+        # Parse percentages
+        def parse_percent(value, default=0):
+            if value:
+                try:
+                    return int(value.replace("%", "").strip())
+                except (ValueError, AttributeError):
+                    return default
+            return default
+        
+        return {
+            "id": result.get("DogId", result.get("id", "unknown")),
+            "breed": result.get("breed", "Unknown"),
+            "size": result.get("size", "Unknown"),
+            "weight_range": weight_range,
+            "daily_portions": 2,
+            "portion_size_grams": portion_grams,
+            "protein_per_portion": parse_percent(result.get("protein")),
+            "fiber_per_portion": parse_percent(result.get("fiber")),
+            "fat_per_portion": parse_percent(result.get("fat")),
+            "calories_per_portion": 300,
+            "recommendations": result.get("notes", "No special notes")
+        }
+    
     def create_index(self):
-        """Create the search index if it doesn't exist."""
+        """Check if the index exists (no need to create - using existing index)."""
         if self.use_fallback:
-            print("Skipping index creation in fallback mode.")
+            print("Using local search fallback mode.")
             return
         
-        fields = [
-            SimpleField(name="id", type=SearchFieldDataType.String, key=True),
-            SearchableField(name="breed", type=SearchFieldDataType.String),
-            SearchableField(name="size", type=SearchFieldDataType.String, filterable=True),
-            SearchableField(name="weight_range", type=SearchFieldDataType.String),
-            SimpleField(name="daily_portions", type=SearchFieldDataType.Int32),
-            SimpleField(name="portion_size_grams", type=SearchFieldDataType.Int32),
-            SimpleField(name="protein_per_portion", type=SearchFieldDataType.Int32),
-            SimpleField(name="fiber_per_portion", type=SearchFieldDataType.Int32),
-            SimpleField(name="fat_per_portion", type=SearchFieldDataType.Int32),
-            SimpleField(name="calories_per_portion", type=SearchFieldDataType.Int32),
-            SearchableField(name="recommendations", type=SearchFieldDataType.String)
-        ]
-        
-        index = SearchIndex(name=self.index_name, fields=fields)
-        
         try:
-            self.index_client.create_or_update_index(index)
-            print(f"Index '{self.index_name}' created successfully.")
+            index = self.index_client.get_index(self.index_name)
+            print(f"✅ Connected to existing index '{self.index_name}' with {len(index.fields)} fields.")
         except Exception as e:
-            print(f"Error creating index: {e}")
+            print(f"⚠️  Index '{self.index_name}' not found: {e}")
+            print("Please ensure the index exists in your Azure Search service.")
     
     def upload_documents(self, documents: List[Dict]):
-        """Upload documents to the search index."""
+        """Note: The index already contains data. This method is not needed for existing index."""
         if self.use_fallback:
-            print("Skipping document upload in fallback mode.")
+            print("Using local data in fallback mode.")
             return
         
-        try:
-            result = self.search_client.upload_documents(documents=documents)
-            print(f"Uploaded {len(documents)} documents successfully.")
-            return result
-        except Exception as e:
-            print(f"Error uploading documents: {e}")
-            return None
+        print("ℹ️  Using existing data in Azure Search index.")
+        print("The index already contains dog nutrition data.")
+        return None
     
     def search_by_breed(self, breed: str, top: int = 5) -> List[Dict]:
         """Search for dog food recommendations by breed."""
@@ -100,12 +118,11 @@ class DogFoodSearchClient:
         try:
             results = self.search_client.search(
                 search_text=breed,
-                select=["breed", "size", "weight_range", "daily_portions", 
-                       "portion_size_grams", "protein_per_portion", "fiber_per_portion",
-                       "fat_per_portion", "calories_per_portion", "recommendations"],
+                select=["DogId", "breed", "size", "weight_min", "weight_max", 
+                       "protein", "fiber", "fat", "portion_per_kg", "notes"],
                 top=top
             )
-            return [dict(result) for result in results]
+            return [self._convert_result_to_app_format(dict(result)) for result in results]
         except Exception as e:
             print(f"Error searching: {e}")
             return []
@@ -124,12 +141,11 @@ class DogFoodSearchClient:
             results = self.search_client.search(
                 search_text="",
                 filter=f"size eq '{size}'",
-                select=["breed", "size", "weight_range", "daily_portions",
-                       "portion_size_grams", "protein_per_portion", "fiber_per_portion",
-                       "fat_per_portion", "calories_per_portion", "recommendations"],
+                select=["DogId", "breed", "size", "weight_min", "weight_max",
+                       "protein", "fiber", "fat", "portion_per_kg", "notes"],
                 top=top
             )
-            return [dict(result) for result in results]
+            return [self._convert_result_to_app_format(dict(result)) for result in results]
         except Exception as e:
             print(f"Error searching by size: {e}")
             return []
@@ -150,17 +166,16 @@ class DogFoodSearchClient:
                     continue
             return results[:top]
         
-        # For Azure Search, we would need to implement range queries
-        # For now, using text search
+        # Search using weight range filter
         try:
             results = self.search_client.search(
-                search_text=f"{weight_kg} kg",
-                select=["breed", "size", "weight_range", "daily_portions",
-                       "portion_size_grams", "protein_per_portion", "fiber_per_portion",
-                       "fat_per_portion", "calories_per_portion", "recommendations"],
+                search_text="*",
+                filter=f"weight_min le {weight_kg} and weight_max ge {weight_kg}",
+                select=["DogId", "breed", "size", "weight_min", "weight_max",
+                       "protein", "fiber", "fat", "portion_per_kg", "notes"],
                 top=top
             )
-            return [dict(result) for result in results]
+            return [self._convert_result_to_app_format(dict(result)) for result in results]
         except Exception as e:
             print(f"Error searching by weight: {e}")
             return []

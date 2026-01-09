@@ -77,7 +77,7 @@ class DogFoodRecommendationApp:
         print(f"  - Fibra: {recommendation['fiber_per_portion']}g")
         print(f"  - Grasa: {recommendation['fat_per_portion']}g")
         print(f"  - Calorías: {recommendation['calories_per_portion']} kcal")
-        print(f"\nRecomendaciones: {recommendation['recommendations']}")
+        print(f"\nNotas de la raza: {recommendation['recommendations']}")
         print("="*60)
     
     def display_recommendations(self, recommendations: List[Dict]):
